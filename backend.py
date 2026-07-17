@@ -317,6 +317,83 @@ def scrape_product_info(url, target_price_manual):
                 try:
                     target_price = float(f"{re.sub(r'[^\d]', '', p_whole.text)}.{re.sub(r'[^\d]', '', p_frac.text)}")
                 except ValueError:
+                    pass
+
+    elif "steampowered.com" in url_lower:
+        # Steam Title (prioritize the real app hub header element over meta dates)
+        title_el = soup.find("div", class_="apphub_AppName") or soup.find("h1")
+        if title_el:
+            title = title_el.text.strip()
+            
+        # Steam Price (Handles Hardware, Accessories, Games, and Sales)
+        steam_price_el = soup.select_one(".valvesale_final_price, .discount_final_price, .game_purchase_price, .price, .purchase_price")
+        if steam_price_el:
+            raw_price = steam_price_el.text.strip().lower()
+            if "free" in raw_price:
+                target_price = 0.0
+            else:
+                cleaned_price = re.sub(r'[^\d.]', '', raw_price)
+                if cleaned_price:
+                    try: target_price = float(cleaned_price)
+                    except ValueError: pass
+
+    # -------------------------------------------------------------------------
+    # LAYER 2: UNIVERSAL LD-JSON TRACK (For GOG and general sites)
+    # -------------------------------------------------------------------------
+    if not title or target_price is None:
+        schema_scripts = soup.find_all("script", type="application/ld+json")
+        for script in schema_scripts:
+            try:
+                if not script.string: continue
+                data = json.loads(script.string.strip())
+                
+                if isinstance(data, dict) and "@graph" in data:
+                    data = data["@graph"]
+                if isinstance(data, list):
+                    product_node = next((item for item in data if item.get("@type") == "Product"), None)
+                    if product_node: data = product_node
+
+                if isinstance(data, dict) and (data.get("@type") == "Product" or "offers" in data):
+                    if not title and data.get("name"):
+                        title = data.get("name")
+                    if not image_url and "image" in data:
+                        img_data = data["image"]
+                        image_url = img_data[0] if isinstance(img_data, list) else img_data
+                    
+                    if target_price is None and "offers" in data:
+                        offers = data["offers"]
+                        if isinstance(offers, list): offers = offers[0]
+                        if isinstance(offers, dict):
+                            raw_price = offers.get("price")
+                            if raw_price is not None:
+                                target_price = float(raw_price)
+            except Exception:
+                continue
+
+    # -------------------------------------------------------------------------
+    # LAYER 3: LAST RESORT GLOBAL FALLBACKS
+    # -------------------------------------------------------------------------
+    if not title:
+        title = soup.title.string.strip() if soup.title else "Product Link Node"
+    if not image_url:
+        og_img = soup.find("meta", property="og:image")
+        if og_img: image_url = og_img.get("content", "")
+
+    if target_price is None:
+        # FIXED: Wrapped itemprop="price" in an attrs dictionary to stay clean and uniform
+        meta_price = soup.find("meta", property="product:price:amount") or soup.find("meta", attrs={"itemprop": "price"})
+        if meta_price and meta_price.get("content"):
+            try: target_price = float(meta_price["content"])
+            except ValueError: pass
+
+    if target_price is None:
+        target_price = float(target_price_manual) if target_price_manual else 0.0
+
+    return {
+        "title": str(title).strip(),
+        "image_url": str(image_url).strip(),
+        "target_price": target_price
+    }
 
 def add_scraped_item(user_id, title, url, image_url, target_price, instructions):
     with engine.connect() as conn:
