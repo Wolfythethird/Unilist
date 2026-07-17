@@ -238,7 +238,7 @@ def validate_and_fix_url(url):
 
 # --- ITEM OPERATIONS ---
 def scrape_product_info(url, target_price_manual):
-    """Universal metadata scraper utilizing structural schema tags"""
+    """Hybrid scraper combining domain-specific rules with universal JSON-LD fallbacks"""
     bypass_cookies = {
         "birthtime": "283993201",
         "wants_mature_content": "1",
@@ -246,11 +246,19 @@ def scrape_product_info(url, target_price_manual):
         "mature_content": "1"
     }
 
+    # Custom headers to look like a real browser—crucial for Amazon
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Connection": "keep-alive"
+    }
+
     res = cffi_requests.get(
         url, 
         impersonate="chrome120", 
         timeout=15, 
-        headers={"Accept-Language": "en-US,en;q=0.9"},
+        headers=headers,
         cookies=bypass_cookies
     )
     
@@ -263,66 +271,103 @@ def scrape_product_info(url, target_price_manual):
     target_price = None
     image_url = ""
 
-    # --- PHASE 1: THE UNIVERSAL LD-JSON SCHEMA PARSER ---
-    # Find all schema scripts on the page
-    schema_scripts = soup.find_all("script", type="application/ld+json")
-    for script in schema_scripts:
-        try:
-            # Clean up text and parse JSON string
-            data = json.loads(script.string.strip())
-            
-            # If the data structure is wrapped in a graph list, extract the inner dictionary
-            if isinstance(data, dict) and "@graph" in data:
-                data = data["@graph"]
-            
-            if isinstance(data, list):
-                # Search for the element labeled as a Product
-                product_node = next((item for item in data if item.get("@type") == "Product"), None)
-                if product_node:
-                    data = product_node
+    # -------------------------------------------------------------------------
+    # LAYER 1: DOMAIN SPECIFIC OVERRIDES (Amazon & Steam)
+    # -------------------------------------------------------------------------
+    url_lower = url.lower()
 
-            if isinstance(data, dict) and (data.get("@type") == "Product" or "offers" in data):
-                # Safely extract values without class selectors
-                if not title:
-                    title = data.get("name")
-                if not image_url and "image" in data:
-                    img_data = data["image"]
-                    image_url = img_data[0] if isinstance(img_data, list) else img_data
+    if "amazon.com" in url_lower:
+        # Amazon Title
+        title_el = soup.find("span", id="productTitle")
+        if title_el:
+            title = title_el.text.strip()
+        
+        # Amazon Image
+        img_el = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront")
+        if img_el:
+            image_url = img_el.get("src", "") or img_el.get("data-old-hires", "")
+            
+        # Amazon Price
+        p_whole = soup.find("span", class_="a-price-whole")
+        p_frac = soup.find("span", class_="a-price-fraction")
+        if p_whole and p_frac:
+            try:
+                target_price = float(f"{re.sub(r'[^\d]', '', p_whole.text)}.{re.sub(r'[^\d]', '', p_frac.text)}")
+            except ValueError:
+                pass
+        if target_price is None:
+            # Check backup text price block
+            price_inline = soup.find("span", class_="a-offscreen")
+            if price_inline:
+                cleaned = re.sub(r'[^\d.]', '', price_inline.text.strip())
+                if cleaned: target_price = float(cleaned)
+
+    elif "steampowered.com" in url_lower:
+        # Steam Title (prioritize the real app hub header element over meta dates)
+        title_el = soup.find("div", class_="apphub_AppName") or soup.find("h1")
+        if title_el:
+            title = title_el.text.strip()
+            
+        # Steam Price (Handles Hardware, Accessories, Games, and Sales)
+        steam_price_el = soup.select_one(".valvesale_final_price, .discount_final_price, .game_purchase_price, .price, .purchase_price")
+        if steam_price_el:
+            raw_price = steam_price_el.text.strip().lower()
+            if "free" in raw_price:
+                target_price = 0.0
+            else:
+                cleaned_price = re.sub(r'[^\d.]', '', raw_price)
+                if cleaned_price:
+                    try: target_price = float(cleaned_price)
+                    except ValueError: pass
+
+    # -------------------------------------------------------------------------
+    # LAYER 2: UNIVERSAL LD-JSON TRACK (For GOG and general sites)
+    # -------------------------------------------------------------------------
+    if not title or target_price is None:
+        schema_scripts = soup.find_all("script", type="application/ld+json")
+        for script in schema_scripts:
+            try:
+                if not script.string: continue
+                data = json.loads(script.string.strip())
                 
-                if "offers" in data:
-                    offers = data["offers"]
-                    if isinstance(offers, list):
-                        offers = offers[0]
-                    if isinstance(offers, dict):
-                        raw_price = offers.get("price")
-                        if raw_price is not None:
-                            target_price = float(raw_price)
-                            break
-        except Exception:
-            continue
+                if isinstance(data, dict) and "@graph" in data:
+                    data = data["@graph"]
+                if isinstance(data, list):
+                    product_node = next((item for item in data if item.get("@type") == "Product"), None)
+                    if product_node: data = product_node
 
-    # --- PHASE 2: SEMANTIC FALLBACKS (If LD-JSON is absent) ---
-    # Title fallback: use the unique H1 header tag
+                if isinstance(data, dict) and (data.get("@type") == "Product" or "offers" in data):
+                    if not title and data.get("name"):
+                        title = data.get("name")
+                    if not image_url and "image" in data:
+                        img_data = data["image"]
+                        image_url = img_data[0] if isinstance(img_data, list) else img_data
+                    
+                    if target_price is None and "offers" in data:
+                        offers = data["offers"]
+                        if isinstance(offers, list): offers = offers[0]
+                        if isinstance(offers, dict):
+                            raw_price = offers.get("price")
+                            if raw_price is not None:
+                                target_price = float(raw_price)
+            except Exception:
+                continue
+
+    # -------------------------------------------------------------------------
+    # LAYER 3: LAST RESORT GLOBAL FALLBACKS
+    # -------------------------------------------------------------------------
     if not title:
-        h1_tag = soup.find("h1")
-        title = h1_tag.text.strip() if h1_tag else (soup.title.string.strip() if soup.title else "Product Node")
-
-    # Image fallback: OpenGraph image tags
+        title = soup.title.string.strip() if soup.title else "Product Link Node"
     if not image_url:
         og_img = soup.find("meta", property="og:image")
-        if og_img:
-            image_url = og_img.get("content", "")
+        if og_img: image_url = og_img.get("content", "")
 
-    # Price fallback: Global Regex scanning across metadata attributes
     if target_price is None:
         meta_price = soup.find("meta", property="product:price:amount") or soup.find("meta", itemprop="price")
         if meta_price and meta_price.get("content"):
-            try:
-                target_price = float(meta_price["content"])
-            except ValueError:
-                pass
+            try: target_price = float(meta_price["content"])
+            except ValueError: pass
 
-    # Final backup: Manual user price mapping entry
     if target_price is None:
         target_price = float(target_price_manual) if target_price_manual else 0.0
 
