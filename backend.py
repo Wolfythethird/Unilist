@@ -238,13 +238,12 @@ def validate_and_fix_url(url):
 
 # --- ITEM OPERATIONS ---
 def scrape_product_info(url, target_price_manual):
-    """Scrapes product info and returns a dictionary with extracted attributes"""
-    # Age-gate bypass cookies for Steam and mature content platforms
+    """Universal metadata scraper utilizing structural schema tags"""
     bypass_cookies = {
-        "birthtime": "283993201",             # Represents a birth year around 1979
-        "wants_mature_content": "1",          # Confirms mature content opt-in
-        "lastagecheckage": "1-January-1920",  # Extra confirmation age check
-        "mature_content": "1"                 # Standard cookie for adult filters
+        "birthtime": "283993201",
+        "wants_mature_content": "1",
+        "lastagecheckage": "1-January-1920",
+        "mature_content": "1"
     }
 
     res = cffi_requests.get(
@@ -260,65 +259,76 @@ def scrape_product_info(url, target_price_manual):
 
     soup = BeautifulSoup(res.text, 'lxml')
     
-    # 1. Title Extraction
     title = None
-    for tag, attrs in [("meta", {"property": "og:title"}), ("span", {"id": "productTitle"}), ("h1", {"id": "title"})]:
-        found = soup.find(tag, attrs)
-        if found:
-            title = found["content"] if tag == "meta" else found.text.strip()
-            break
-    if not title:
-        title = soup.title.string.strip() if soup.title else "Product Node"
-
-    # 2. Image Extraction
-    image_url = ""
-    for tag, attrs in [("meta", {"property": "og:image"}), ("img", {"id": "landingImage"}), ("img", {"id": "imgBlkFront"})]:
-        found = soup.find(tag, attrs)
-        if found:
-            image_url = found["content"] if tag == "meta" else found.get("src", "")
-            break
-
-    # 3. Price Extraction (Upgraded Multi-Platform & Steam Hardware Support)
     target_price = None
+    image_url = ""
 
-    # Strategy A: Standard Meta tags (eBay, Shopify, standard products)
-    meta_price = soup.find("meta", property="product:price:amount") or soup.find("meta", itemprop="price")
-    if meta_price and meta_price.get("content"):
+    # --- PHASE 1: THE UNIVERSAL LD-JSON SCHEMA PARSER ---
+    # Find all schema scripts on the page
+    schema_scripts = soup.find_all("script", type="application/ld+json")
+    for script in schema_scripts:
         try:
-            target_price = float(meta_price["content"])
-        except ValueError:
-            pass
+            # Clean up text and parse JSON string
+            data = json.loads(script.string.strip())
+            
+            # If the data structure is wrapped in a graph list, extract the inner dictionary
+            if isinstance(data, dict) and "@graph" in data:
+                data = data["@graph"]
+            
+            if isinstance(data, list):
+                # Search for the element labeled as a Product
+                product_node = next((item for item in data if item.get("@type") == "Product"), None)
+                if product_node:
+                    data = product_node
 
-    # Strategy B: Steam-Specific Selectors (Supports games and physical Valve hardware)
+            if isinstance(data, dict) and (data.get("@type") == "Product" or "offers" in data):
+                # Safely extract values without class selectors
+                if not title:
+                    title = data.get("name")
+                if not image_url and "image" in data:
+                    img_data = data["image"]
+                    image_url = img_data[0] if isinstance(img_data, list) else img_data
+                
+                if "offers" in data:
+                    offers = data["offers"]
+                    if isinstance(offers, list):
+                        offers = offers[0]
+                    if isinstance(offers, dict):
+                        raw_price = offers.get("price")
+                        if raw_price is not None:
+                            target_price = float(raw_price)
+                            break
+        except Exception:
+            continue
+
+    # --- PHASE 2: SEMANTIC FALLBACKS (If LD-JSON is absent) ---
+    # Title fallback: use the unique H1 header tag
+    if not title:
+        h1_tag = soup.find("h1")
+        title = h1_tag.text.strip() if h1_tag else (soup.title.string.strip() if soup.title else "Product Node")
+
+    # Image fallback: OpenGraph image tags
+    if not image_url:
+        og_img = soup.find("meta", property="og:image")
+        if og_img:
+            image_url = og_img.get("content", "")
+
+    # Price fallback: Global Regex scanning across metadata attributes
     if target_price is None:
-        # Added .valvesale_final_price for physical hardware/accessories
-        steam_price_element = soup.select_one(".valvesale_final_price, .discount_final_price, .game_purchase_price, .price, .purchase_price")
-        if steam_price_element:
-            raw_price = steam_price_element.text.strip().lower()
-            if "free" in raw_price:
-                target_price = 0.0
-            else:
-                cleaned_price = re.sub(r'[^\d.]', '', raw_price)
-                if cleaned_price:
-                    try:
-                        target_price = float(cleaned_price)
-                    except ValueError:
-                        pass
+        meta_price = soup.find("meta", property="product:price:amount") or soup.find("meta", itemprop="price")
+        if meta_price and meta_price.get("content"):
+            try:
+                target_price = float(meta_price["content"])
+            except ValueError:
+                pass
 
-    # Strategy C: Amazon-Specific Fallback
-    if target_price is None:
-        p_whole = soup.find("span", class_="a-price-whole")
-        p_frac = soup.find("span", class_="a-price-fraction")
-        if p_whole and p_frac:
-            target_price = float(f"{re.sub(r'[^\d]', '', p_whole.text)}.{re.sub(r'[^\d]', '', p_frac.text)}")
-
-    # Strategy D: User Manual Input Fallback
+    # Final backup: Manual user price mapping entry
     if target_price is None:
         target_price = float(target_price_manual) if target_price_manual else 0.0
 
     return {
-        "title": title.strip(),
-        "image_url": image_url,
+        "title": str(title).strip(),
+        "image_url": str(image_url).strip(),
         "target_price": target_price
     }
 
