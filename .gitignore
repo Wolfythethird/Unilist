@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Custom
+wishlist_v2.db
+user_sessions.json
+.session_9a6f6438176a789b
