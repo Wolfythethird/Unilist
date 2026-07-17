@@ -277,30 +277,45 @@ def scrape_product_info(url, target_price_manual):
     url_lower = url.lower()
 
     if "amazon.com" in url_lower:
-        # Amazon Title
-        title_el = soup.find("span", id="productTitle")
-        if title_el:
-            title = title_el.text.strip()
-        
-        # Amazon Image
-        img_el = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront")
-        if img_el:
-            image_url = img_el.get("src", "") or img_el.get("data-old-hires", "")
+        # Check if we got blanked or hit a robot-check screen
+        if "captcha" in res.text.lower() or "robot check" in res.text.lower() or not soup.find("span", id="productTitle"):
+            # Plan B: Scrape standard metadata elements that Amazon leaves exposed for search spiders
+            meta_title = soup.find("meta", property="og:title") or soup.find("meta", name="title")
+            if meta_title and meta_title.get("content"):
+                title = meta_title["content"].replace("Amazon.com: ", "").strip()
+            else:
+                title = soup.title.string.replace("Amazon.com", "").strip() if soup.title else "Amazon Product"
             
-        # Amazon Price
-        p_whole = soup.find("span", class_="a-price-whole")
-        p_frac = soup.find("span", class_="a-price-fraction")
-        if p_whole and p_frac:
-            try:
-                target_price = float(f"{re.sub(r'[^\d]', '', p_whole.text)}.{re.sub(r'[^\d]', '', p_frac.text)}")
-            except ValueError:
-                pass
-        if target_price is None:
-            # Check backup text price block
-            price_inline = soup.find("span", class_="a-offscreen")
-            if price_inline:
-                cleaned = re.sub(r'[^\d.]', '', price_inline.text.strip())
-                if cleaned: target_price = float(cleaned)
+            # Extract standard image links from metadata paths
+            meta_img = soup.find("meta", property="og:image") or soup.find("meta", name="twitter:image")
+            if meta_img:
+                image_url = meta_img.get("content", "")
+                
+            # Scan the entire text profile of the raw page for currency digits using Regex
+            # This extracts prices even if Amazon strips out the CSS class wrappers
+            price_match = re.search(r'\$[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})', res.text)
+            if price_match:
+                try:
+                    target_price = float(price_match.group(0).replace("$", "").replace(",", ""))
+                except ValueError:
+                    pass
+        else:
+            # Plan A: Standard selector extraction if the request successfully bypassed protection
+            title_el = soup.find("span", id="productTitle") or soup.find("h1", id="title")
+            if title_el:
+                title = title_el.text.strip()
+            
+            img_el = soup.find("img", id="landingImage") or soup.find("img", id="imgBlkFront")
+            if img_el:
+                image_url = img_el.get("src", "")
+                
+            p_whole = soup.find("span", class_="a-price-whole")
+            p_frac = soup.find("span", class_="a-price-fraction")
+            if p_whole and p_frac:
+                try:
+                    target_price = float(f"{re.sub(r'[^\d]', '', p_whole.text)}.{re.sub(r'[^\d]', '', p_frac.text)}")
+                except ValueError:
+                    pass
 
     elif "steampowered.com" in url_lower:
         # Steam Title (prioritize the real app hub header element over meta dates)
