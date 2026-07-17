@@ -60,7 +60,7 @@ def init_db():
         
         # Migrations
         try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN share_uuid TEXT UNIQUE"))
+            conn.execute(text("ALTER TABLE items ADD COLUMN last_scraped TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
             conn.commit()
         except Exception:
             pass
@@ -378,11 +378,11 @@ def delete_item(item_id):
         conn.commit()
 
 def update_item_price_and_title(item_id, title, target_price):
-    """Updates the price and title of an existing database entry during live rescrapes"""
+    """Updates the price, title, and timestamp of an existing entry"""
     with engine.connect() as conn:
         conn.execute(text("""
             UPDATE items 
-            SET title = :title, target_price = :target_price 
+            SET title = :title, target_price = :target_price, last_scraped = CURRENT_TIMESTAMP 
             WHERE id = :id
         """), {"title": title, "target_price": target_price, "id": item_id})
         conn.commit()

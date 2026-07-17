@@ -216,38 +216,51 @@ else:
             with col_filter:
                 filter_status = st.selectbox("📌 Status Filter", ["All Items", "Available", "Claimed / Fully Funded"])
 
-            # --- DYNAMIC BACKGROUND AUTO-RESCRAPE ENGINE ---
+            # --- SMART DYNAMIC BACKGROUND AUTO-RESCRAPE ENGINE ---
             raw_items = backend.get_user_items(active_user_id)
             items_array = []
             
-            # Use streamlit session state to prevent infinite reload loop in a single run
             if "rescraped_this_session" not in st.session_state:
                 st.session_state.rescraped_this_session = set()
             
             for item in raw_items:
-                id, title, url, img, target, pledged, inst, funded, bought = item
+                # Note: If your backend query doesn't fetch last_scraped, make sure it's selected!
+                # Ensure get_user_items returns the last_scraped column.
+                id, title, url, img, target, pledged, inst, funded, bought, *extra = item
                 
-                # If it has a URL and we haven't scraped it yet in this specific app run
+                # Fetch last_scraped if it exists in the row, otherwise default to old timestamp
+                last_scraped_str = item[9] if len(item) > 9 else None
+                
+                should_rescrape = False
                 if url and id not in st.session_state.rescraped_this_session:
+                    if last_scraped_str:
+                        try:
+                            # Parse SQLite timestamp format
+                            last_scraped_dt = datetime.fromisoformat(last_scraped_str.replace("Z", ""))
+                            time_passed = datetime.utcnow() - last_scraped_dt
+                            # Cool-down threshold: 2 hours (7200 seconds)
+                            if time_passed.total_seconds() > 7200:
+                                should_rescrape = True
+                        except Exception:
+                            should_rescrape = True
+                    else:
+                        should_rescrape = True
+
+                if should_rescrape:
                     try:
-                        # Attempt an on-the-fly rescrape
                         scraped_data = backend.scrape_product_info(url, target)
                         new_price = scraped_data["target_price"]
                         new_title = scraped_data["title"]
                         
-                        # Update DB if data changes (e.g. price drops or hardware is fixed)
-                        if float(new_price) != float(target) or new_title != title:
-                            backend.update_item_price_and_title(id, new_title, new_price)
-                            # Update local reference values for this render cycle
-                            target = new_price
-                            title = new_title
+                        # Always call this to update the timestamp even if the price didn't change
+                        backend.update_item_price_and_title(id, new_title, new_price)
                         
+                        target = new_price
+                        title = new_title
                         st.session_state.rescraped_this_session.add(id)
-                    except Exception as e:
-                        # Quietly fall back to previous DB records if scraping fails
-                        pass
+                    except Exception:
+                        pass # Silently fail and use cached DB data if Amazon blocks us
                 
-                # Append finalized up-to-date item data structure
                 items_array.append((id, title, url, img, target, pledged, inst, funded, bought))
 
             # --- SEARCH, FILTER & RENDER ENGINE ---
