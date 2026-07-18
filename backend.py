@@ -435,11 +435,25 @@ def add_custom_item(user_id, instructions, target_price):
         conn.commit()
 
 def get_user_items(user_id):
+    """Fetches user items with explicitly ordered positions for the UI unpack loop"""
     with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT id, title, url, image_url, target_price, funds_pledged, instructions, is_fully_funded, is_bought FROM items WHERE user_id = :uid"),
-            {"uid": user_id}
-        )
+        result = conn.execute(text("""
+            SELECT 
+                id, 
+                title, 
+                url, 
+                image_url, 
+                target_price, 
+                funds_pledged, 
+                instructions, 
+                is_fully_funded, 
+                is_bought,
+                setting
+            FROM items 
+            WHERE user_id = :uid
+        """), {"uid": user_id})
+        
+        # Returns clean, predictably ordered row tuples regardless of schema changes
         return result.fetchall()
 
 def pledge_money(item_id, amount):
