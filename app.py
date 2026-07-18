@@ -177,6 +177,12 @@ else:
                 "Venmo me at @username, drop off cash, or click 'Mark as Bought' if buying the physical package!"
             )
             
+            # --- NEW: SETTING DROP-DOWN SELECTION ---
+            item_setting = st.selectbox(
+                "🎁 Item Priority / Setting:",
+                ["Standard Wish", "🔥 High Priority (Most Wanted)", "🔒 Private/Draft Note", "🎂 Birthday Special"]
+            )
+            
             st.markdown("---")
             manual_title_override = st.text_input("Manual Title Override (Used if auto-scraping gets blocked)")
             
@@ -188,14 +194,12 @@ else:
                     else:
                         with st.spinner("Processing metadata cache layer..."):
                             try:
-                                # Apply automated URL cleaning for mobile layouts
                                 if "amazon.com" in fixed_url.lower() and "/dp/" in fixed_url.lower():
                                     asin = fixed_url.split("/dp/")[1].split("/")[0].split("?")[0]
                                     fixed_url = f"https://www.amazon.com/gp/aw/d/{asin}"
 
                                 scraped_data = backend.scrape_product_info(fixed_url, manual_price)
                                 
-                                # Use manual override values if scraping parameters return blank values
                                 final_title = manual_title_override if manual_title_override else scraped_data["title"]
                                 final_price = manual_price if manual_price > 0 else scraped_data["target_price"]
                                 final_image = scraped_data["image_url"]
@@ -206,17 +210,20 @@ else:
                                 final_image = ""
                                 st.warning("⚠️ Web scraper protected by domain security. Record created using local fallbacks.")
 
+                            # Pass item_setting down to your backend function
                             backend.add_scraped_item(
                                 user_id=st.session_state.user_id,
                                 title=final_title,
                                 url=fixed_url,
                                 image_url=final_image,
                                 target_price=final_price,
-                                instructions=instructions
+                                instructions=instructions,
+                                setting=item_setting  # <--- Make sure your backend can receive this string!
                             )
-                            st.success("Item injected into database!")
+                            st.success(f"Item injected into database as '{item_setting}'!")
                 else:
-                    backend.add_custom_item(st.session_state.user_id, instructions, manual_price)
+                    # Pass item_setting down for custom item creation too if needed
+                    backend.add_custom_item(st.session_state.user_id, instructions, manual_price, setting=item_setting)
                     st.success("Custom cash entity built!")
 
     # PAGE 3: DASHBOARD VIEWS ENGINE
