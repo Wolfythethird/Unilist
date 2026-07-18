@@ -171,30 +171,50 @@ else:
         st.subheader("Import Target Item Node")
         with st.form("scraper_input_form", clear_on_submit=True):
             target_url = st.text_input("Pasted Product Source URL (Leave blank for custom cash funds):")
-            manual_price = st.number_input("Target Price ($)", min_value=0.0, step=1.0)
+            manual_price = st.number_input("Manual Target Price Fallback ($)", min_value=0.0, step=1.0)
             instructions = st.text_area(
                 "Giver Payment / Contribution Instructions:", 
                 "Venmo me at @username, drop off cash, or click 'Mark as Bought' if buying the physical package!"
             )
+            
+            st.markdown("---")
+            manual_title_override = st.text_input("Manual Title Override (Used if auto-scraping gets blocked)")
+            
             if st.form_submit_button("Scrape & Commit to Database", type="primary"):
                 if target_url:
                     is_valid, fixed_url = backend.validate_and_fix_url(target_url)
                     if not is_valid:
                         st.error("❌ Invalid URL format. Please enter a valid website URL (e.g., amazon.com or https://example.com)")
                     else:
-                        try:
-                            scraped_data = backend.scrape_product_info(fixed_url, manual_price)
+                        with st.spinner("Processing metadata cache layer..."):
+                            try:
+                                # Apply automated URL cleaning for mobile layouts
+                                if "amazon.com" in fixed_url.lower() and "/dp/" in fixed_url.lower():
+                                    asin = fixed_url.split("/dp/")[1].split("/")[0].split("?")[0]
+                                    fixed_url = f"https://www.amazon.com/gp/aw/d/{asin}"
+
+                                scraped_data = backend.scrape_product_info(fixed_url, manual_price)
+                                
+                                # Use manual override values if scraping parameters return blank values
+                                final_title = manual_title_override if manual_title_override else scraped_data["title"]
+                                final_price = manual_price if manual_price > 0 else scraped_data["target_price"]
+                                final_image = scraped_data["image_url"]
+                                
+                            except Exception as e:
+                                final_title = manual_title_override if manual_title_override else "Custom Linked Item"
+                                final_price = manual_price
+                                final_image = ""
+                                st.warning("⚠️ Web scraper protected by domain security. Record created using local fallbacks.")
+
                             backend.add_scraped_item(
                                 user_id=st.session_state.user_id,
-                                title=scraped_data["title"],
+                                title=final_title,
                                 url=fixed_url,
-                                image_url=scraped_data["image_url"],
-                                target_price=scraped_data["target_price"],
+                                image_url=final_image,
+                                target_price=final_price,
                                 instructions=instructions
                             )
                             st.success("Item injected into database!")
-                        except Exception as e:
-                            st.error(f"Scraping Error: {e}")
                 else:
                     backend.add_custom_item(st.session_state.user_id, instructions, manual_price)
                     st.success("Custom cash entity built!")
@@ -216,56 +236,17 @@ else:
             with col_filter:
                 filter_status = st.selectbox("📌 Status Filter", ["All Items", "Available", "Claimed / Fully Funded"])
 
-            # --- SMART DYNAMIC BACKGROUND AUTO-RESCRAPE ENGINE ---
+            # Reads directly from your SQLite database records. Zero network lag.
             raw_items = backend.get_user_items(active_user_id)
             items_array = []
             
-            if "rescraped_this_session" not in st.session_state:
-                st.session_state.rescraped_this_session = set()
-            
             for item in raw_items:
-                # Note: If your backend query doesn't fetch last_scraped, make sure it's selected!
-                # Ensure get_user_items returns the last_scraped column.
-                id, title, url, img, target, pledged, inst, funded, bought, *extra = item
-                
-                # Fetch last_scraped if it exists in the row, otherwise default to old timestamp
-                last_scraped_str = item[9] if len(item) > 9 else None
-                
-                should_rescrape = False
-                if url and id not in st.session_state.rescraped_this_session:
-                    if last_scraped_str:
-                        try:
-                            # Parse SQLite timestamp format
-                            last_scraped_dt = datetime.fromisoformat(last_scraped_str.replace("Z", ""))
-                            time_passed = datetime.utcnow() - last_scraped_dt
-                            # Cool-down threshold: 2 hours (7200 seconds)
-                            if time_passed.total_seconds() > 7200:
-                                should_rescrape = True
-                        except Exception:
-                            should_rescrape = True
-                    else:
-                        should_rescrape = True
-
-                if should_rescrape:
-                    try:
-                        scraped_data = backend.scrape_product_info(url, target)
-                        new_price = scraped_data["target_price"]
-                        new_title = scraped_data["title"]
-                        
-                        # Always call this to update the timestamp even if the price didn't change
-                        backend.update_item_price_and_title(id, new_title, new_price)
-                        
-                        target = new_price
-                        title = new_title
-                        st.session_state.rescraped_this_session.add(id)
-                    except Exception:
-                        pass # Silently fail and use cached DB data if Amazon blocks us
-                
+                id, title, url, img, target, pledged, inst, funded, bought = item[:9]
                 items_array.append((id, title, url, img, target, pledged, inst, funded, bought))
 
             # --- SEARCH, FILTER & RENDER ENGINE ---
             if not items_array:
-                st.info("No items mapped to this user node profile yet.")
+                st.info("No items mapped to this user profile yet.")
             else:
                 filtered_items = []
                 for node in items_array:
@@ -308,14 +289,11 @@ else:
                                     
                                 # --- PROGRESS AND PRICE DISPLAY ---
                                 if url and t_val == 0.0:
-                                    # It's a scraped item that is free
                                     st.success("🟢 **FREE**")
                                 elif t_val > 0.0:
-                                    # Paid items
                                     st.write(f"**Target:** ${t_val:,.2f} | **Pledged:** ${p_val:,.2f}")
                                     st.progress(progress_pct)
                                 else:
-                                    # Custom cash funds without a link
                                     st.write(f"**Direct Contributions:** ${p_val:,.2f}")
                                     
                                 st.caption(f"Instruction Protocol: {inst}")
@@ -346,7 +324,7 @@ else:
                                                     backend.pledge_money(id, amt_pledge)
                                                     st.rerun()
                                         with gst_col2:
-                                            if st.button("🎁 Mark as Bought", key=f"bt_{id}", use_container_width=True, type="primary", help="Select this if you bought the physical item outside this app"):
+                                            if st.button("🎁 Mark as Bought", key=f"bt_{id}", use_container_width=True, type="primary"):
                                                 backend.mark_item_as_bought(id)
                                                 st.success("Claimed!")
                                                 st.rerun()
@@ -368,6 +346,6 @@ else:
         else:
             for user_id, username, share_uuid in invited_wishlists:
                 if st.button(f"👤 View @{username}'s Wishlist", key=f"invited_{user_id}"):
-                    st.query_params['share'] = share_uuid
+                    st.query_params.update(share=share_uuid)
                     st.session_state.invited_accepted = True
                     st.rerun()
