@@ -395,18 +395,19 @@ def scrape_product_info(url, target_price_manual):
         "target_price": target_price
     }
 
-def add_scraped_item(user_id, title, url, image_url, target_price, instructions):
+def add_scraped_item(user_id, title, url, image_url, target_price, instructions, setting="Standard Wish"):
     with engine.connect() as conn:
         conn.execute(text("""
-            INSERT INTO items (user_id, title, url, image_url, target_price, instructions, is_bought) 
-            VALUES (:uid, :title, :url, :image_url, :target_price, :instructions, 0)
+            INSERT INTO items (user_id, title, url, image_url, target_price, instructions, setting, is_bought) 
+            VALUES (:uid, :title, :url, :image_url, :target_price, :instructions, :setting, 0)
         """), {
             "uid": user_id, 
             "title": title, 
             "url": url, 
             "image_url": image_url, 
             "target_price": target_price, 
-            "instructions": instructions
+            "instructions": instructions,
+            "setting": setting  # <--- Binds the drop-down string value to your database column
         })
         conn.commit()
 
