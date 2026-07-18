@@ -29,7 +29,8 @@ def init_db():
                 share_uuid TEXT UNIQUE NOT NULL
             )
         """))
-        # Wishlist Items Table
+        
+        # Wishlist Items Table (UPDATED Blueprint)
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,11 +41,13 @@ def init_db():
                 target_price DECIMAL(10, 2) DEFAULT 0.00,
                 funds_pledged DECIMAL(10, 2) DEFAULT 0.00,
                 instructions TEXT,
+                setting TEXT DEFAULT 'Standard Wish', -- 1. Added directly to fresh schema blueprint
                 is_fully_funded BOOLEAN DEFAULT 0,
                 is_bought BOOLEAN DEFAULT 0,
                 FOREIGN KEY(user_id) REFERENCES users(id)
             )
         """))
+        
         # Invitations Table
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS invitations (
@@ -70,6 +73,14 @@ def init_db():
             conn.commit()
         except Exception:
             pass
+
+        # 2. Safety Migration step for existing files/environments
+        try:
+            conn.execute(text("ALTER TABLE items ADD COLUMN setting TEXT DEFAULT 'Standard Wish'"))
+            conn.commit()
+        except Exception:
+            pass
+            
         conn.commit()
 
 # Call initialization on import
