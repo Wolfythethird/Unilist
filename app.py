@@ -168,63 +168,125 @@ else:
 
     # PAGE 2: CORE INPUT CONTROLLER
     elif nav_selection == "➕ Add New Item":
-        st.subheader("Import Target Item Node")
-        with st.form("scraper_input_form", clear_on_submit=True):
-            target_url = st.text_input("Pasted Product Source URL (Leave blank for custom cash funds):")
-            manual_price = st.number_input("Manual Target Price Fallback ($)", min_value=0.0, step=1.0)
-            instructions = st.text_area(
-                "Giver Payment / Contribution Instructions:", 
-                "Venmo me at @username, drop off cash, or click 'Mark as Bought' if buying the physical package!"
-            )
-            
-            # --- NEW: SETTING DROP-DOWN SELECTION ---
-            item_setting = st.selectbox(
-                "🎁 Item Priority / Setting:",
-                ["Standard Wish", "🔥 High Priority (Most Wanted)", "🔒 Private/Draft Note", "🎂 Birthday Special"]
-            )
-            
-            st.markdown("---")
-            manual_title_override = st.text_input("Manual Title Override (Used if auto-scraping gets blocked)")
-            
-            if st.form_submit_button("Scrape & Commit to Database", type="primary"):
-                if target_url:
-                    is_valid, fixed_url = backend.validate_and_fix_url(target_url)
-                    if not is_valid:
-                        st.error("❌ Invalid URL format. Please enter a valid website URL (e.g., amazon.com or https://example.com)")
+        st.subheader("Add Item to Your Wishlist")
+        
+        # Split item types into clean, distinct tabs
+        tab_url, tab_cash, tab_extension = st.tabs([
+            "🌐 Scrape via Product URL", 
+            "💸 Custom Cash Fund / Registry", 
+            "🧩 Browser Extension Sync"
+        ])
+        
+        # --- TAB 1: PRODUCT URL INPUT ---
+        with tab_url:
+            with st.form("scraper_input_form", clear_on_submit=True):
+                target_url = st.text_input("Product Link (Amazon, Target, etc.):")
+                manual_price = st.number_input("Manual Price Fallback ($)", min_value=0.0, step=1.0, key="url_price")
+                instructions = st.text_area(
+                    "Giver Payment / Contribution Instructions:", 
+                    "Click the link to buy the item, then mark it as bought here!",
+                    key="url_inst"
+                )
+                item_setting = st.selectbox(
+                    "🎁 Item Priority / Setting:",
+                    ["Standard Wish", "🔥 High Priority (Most Wanted)", "🎂 Birthday Special"],
+                    key="url_setting"
+                )
+                manual_title_override = st.text_input("Manual Title Override (Optional)", key="url_title")
+                
+                if st.form_submit_button("Add via Scraping Engine", type="primary"):
+                    if target_url:
+                        is_valid, fixed_url = backend.validate_and_fix_url(target_url)
+                        if not is_valid:
+                            st.error("❌ Invalid URL format.")
+                        else:
+                            with st.spinner("Processing metadata cache layer..."):
+                                try:
+                                    # Clean tracking codes out of mobile layouts
+                                    if "amazon.com" in fixed_url.lower() and "/dp/" in fixed_url.lower():
+                                        asin = fixed_url.split("/dp/")[1].split("/")[0].split("?")[0]
+                                        fixed_url = f"https://www.amazon.com/gp/aw/d/{asin}"
+
+                                    scraped_data = backend.scrape_product_info(fixed_url, manual_price)
+                                    final_title = manual_title_override if manual_title_override else scraped_data["title"]
+                                    final_price = manual_price if manual_price > 0 else scraped_data["target_price"]
+                                    final_image = scraped_data["image_url"]
+                                except Exception:
+                                    final_title = manual_title_override if manual_title_override else "Custom Linked Item"
+                                    final_price = manual_price
+                                    final_image = ""
+                                    st.warning("⚠️ Protected domain security hit. Using local overrides.")
+
+                                backend.add_scraped_item(
+                                    user_id=st.session_state.user_id,
+                                    title=final_title,
+                                    url=fixed_url,
+                                    image_url=final_image,
+                                    target_price=final_price,
+                                    instructions=instructions,
+                                    setting=item_setting
+                                )
+                                st.success("Item injected into database!")
+                                st.rerun()
+
+        # --- TAB 2: CUSTOM CASH FUND ---
+        with tab_cash:
+            with st.form("cash_input_form", clear_on_submit=True):
+                cash_title = st.text_input("Fund Title (e.g., 'New Gaming PC Fund', 'College Books')")
+                target_fund_amount = st.number_input("Target Goal Amount ($)", min_value=0.0, step=50.0)
+                cash_instructions = st.text_area(
+                    "How people can send you money:", 
+                    "Venmo me at @yourusername or drop off cash directly!",
+                    key="cash_inst"
+                )
+                cash_setting = st.selectbox(
+                    "🎁 Item Priority / Setting:",
+                    ["Standard Wish", "🔥 High Priority (Most Wanted)", "🔒 Private/Draft Note"],
+                    key="cash_setting"
+                )
+                
+                if st.form_submit_button("Create Cash Registry Entity", type="primary"):
+                    if cash_title:
+                        # Map custom items safely into your existing schema architecture
+                        backend.add_scraped_item(
+                            user_id=st.session_state.user_id,
+                            title=cash_title,
+                            url="", # Blank URL indicates cash item
+                            image_url="", # Empty image maps default gift box graphic
+                            target_price=target_fund_amount,
+                            instructions=cash_instructions,
+                            setting=cash_setting
+                        )
+                        st.success(f"💰 Cash fund '{cash_title}' successfully opened!")
+                        st.rerun()
                     else:
-                        with st.spinner("Processing metadata cache layer..."):
-                            try:
-                                if "amazon.com" in fixed_url.lower() and "/dp/" in fixed_url.lower():
-                                    asin = fixed_url.split("/dp/")[1].split("/")[0].split("?")[0]
-                                    fixed_url = f"https://www.amazon.com/gp/aw/d/{asin}"
+                        st.error("❌ Please provide a title for your cash fund.")
 
-                                scraped_data = backend.scrape_product_info(fixed_url, manual_price)
-                                
-                                final_title = manual_title_override if manual_title_override else scraped_data["title"]
-                                final_price = manual_price if manual_price > 0 else scraped_data["target_price"]
-                                final_image = scraped_data["image_url"]
-                                
-                            except Exception as e:
-                                final_title = manual_title_override if manual_title_override else "Custom Linked Item"
-                                final_price = manual_price
-                                final_image = ""
-                                st.warning("⚠️ Web scraper protected by domain security. Record created using local fallbacks.")
+        # --- TAB 3: BROWSER EXTENSION SETUP ---
+        with tab_extension:
+            st.markdown("### 🧩 Unilist Chrome Extension Integration")
+            st.write(
+                "Add items from **any store website** instantly with a single click "
+                "without opening the Streamlit application hub."
+            )
+            
+            # Instructional placeholder container
+            with st.container(border=True):
+                st.markdown("#### Installation Protocol")
+                st.markdown(
+                    "1. Download the Unilist extension package build (`unilist-extension.zip`).\n"
+                    "2. Open `chrome://extensions/` in your browser address bar.\n"
+                    "3. Enable **Developer mode** (top right switch).\n"
+                    "4. Click **Load unpacked** and select your unzipped extension directory."
+                )
+                
+                # Provide a generic download action button shell
+                st.button("📥 Download Extension Package (.ZIP)", disabled=True, help="Extension package asset generation handled later.")
 
-                            # Pass item_setting down to your backend function
-                            backend.add_scraped_item(
-                                user_id=st.session_state.user_id,
-                                title=final_title,
-                                url=fixed_url,
-                                image_url=final_image,
-                                target_price=final_price,
-                                instructions=instructions,
-                                setting=item_setting  # <--- Make sure your backend can receive this string!
-                            )
-                            st.success(f"Item injected into database as '{item_setting}'!")
-                else:
-                    # Pass item_setting down for custom item creation too if needed
-                    backend.add_custom_item(st.session_state.user_id, instructions, manual_price, setting=item_setting)
-                    st.success("Custom cash entity built!")
+            # Provide the API connection keys the extension will need to handshake with the backend
+            with st.expander("🔑 View Extension Sync Credentials", expanded=False):
+                st.info("When configuring your extension for the first time, use this secret token to authenticate your account channel:")
+                st.code(f"{st.session_state.session_token if st.session_state.session_token else 'NOT_SIGNED_IN'}", language="text")
 
     # PAGE 3: DASHBOARD VIEWS ENGINE
     elif nav_selection == "My Wishlist Dashboard" or (target_share_user and st.session_state.invited_accepted):
